@@ -1,0 +1,427 @@
+(* ========================================================================== *)
+(* Car_Safety_Proof.iml - Safety Proof with Neural Network Controller         *)
+(*                                                                            *)
+(* This version uses our ImandraX Tensor module to define the controller,     *)
+(* demonstrating verification of a neural network for safety-critical control.*)
+(*                                                                            *)
+(* The controller is defined as:                                              *)
+(*   controllerFun p1 p2 = lookup (controller (normalise (tensor [p1,p2]))) 0 *)
+(*                                                                            *)
+(* Author: Grant Passmore (grant@imandra.ai)                                  *)
+(* ========================================================================== *)
+
+[@@@import "tensor.iml"]
+[@@@import "subtensor.iml"]
+[@@@import "add.iml"]
+[@@@import "scalar_mult.iml"]
+[@@@import "vehicle.iml"]
+
+(* ========================================================================== *)
+(* REAL-VALUED TENSOR OPERATIONS FOR NEURAL NETWORKS                          *)
+(*                                                                            *)
+(* The Tensor module is polymorphic, so we use `real Tensor.tensor` for       *)
+(* neural network computations. We define real-specific operations here.      *)
+(* ========================================================================== *)
+
+(* Dot product of two real vectors - core operation for linear layers *)
+
+let rec dot_product (xs : real list) (ys : real list) : real =
+  match xs, ys with
+  | [], _ -> 0.0
+  | _, [] -> 0.0
+  | x :: xs', y :: ys' -> (x *. y) +. dot_product xs' ys'
+
+(* Vector-scalar multiplication for reals *)
+
+let rec vec_smult_real (alpha : real) (xs : real list) : real list =
+  match xs with
+  | [] -> []
+  | x :: xs' -> (alpha *. x) :: vec_smult_real alpha xs'
+
+(* Vector addition for reals *)
+
+let rec vec_plus_real (xs : real list) (ys : real list) : real list =
+  match xs, ys with
+  | [], _ -> []
+  | _, [] -> []
+  | x :: xs', y :: ys' -> (x +. y) :: vec_plus_real xs' ys'
+
+(* Scalar multiplication for real tensors *)
+
+let smult_real (alpha : real) (t : real Tensor.tensor) : real Tensor.tensor =
+  Tensor.tensor_from_vec t.dims (vec_smult_real alpha t.vec)
+
+(* Tensor addition for real tensors *)
+
+let plus_base_real (a : real Tensor.tensor) (b : real Tensor.tensor) : real Tensor.tensor =
+  Tensor.tensor_from_vec a.dims (vec_plus_real a.vec b.vec)
+
+(* ========================================================================== *)
+(* NEURAL NETWORK LAYER OPERATIONS                                            *)
+(* ========================================================================== *)
+
+(* A linear layer computes: output = weights · input + bias
+   
+   For a single-output layer (used in this controller):
+   - weights: real tensor storing weight vector
+   - bias: real tensor storing bias scalar
+   - input: real tensor of shape [in_dim]
+   - output: real tensor of shape [1]
+*)
+
+let linear_layer_1d (weights : real Tensor.tensor) (bias : real Tensor.tensor) 
+                    (input : real Tensor.tensor) : real Tensor.tensor =
+  let output_val = dot_product weights.vec input.vec in
+  let bias_val = match bias.vec with b :: _ -> b | [] -> 0.0 in
+  Tensor.tensor_from_vec [1] [output_val +. bias_val]
+
+(* Multi-output linear layer (for future extension to deeper networks).
+   Computes output[i] = sum_j(weights[i,j] * input[j]) + bias[i]
+   
+   weights: tensor of shape [out_dim * in_dim] in row-major order
+   bias: tensor of shape [out_dim]
+   input: tensor of shape [in_dim]
+*)
+
+let rec compute_row (weights_row : real list) (input : real list) : real =
+  dot_product weights_row input
+
+(* ========================================================================== *)
+(* NEURAL NETWORK SPECIFICATION TYPE                                          *)
+(* ========================================================================== *)
+
+(* Neural network specification for the wind controller.
+   This represents a simple linear controller (single layer, no activation).
+*)
+
+type nn_controller_spec = {
+  weights : real Tensor.tensor;  (* Weight tensor *)
+  bias : real Tensor.tensor;     (* Bias tensor *)
+}
+
+(* Forward pass through the neural network *)
+
+let nn_forward (spec : nn_controller_spec) (input : real Tensor.tensor) : real Tensor.tensor =
+  linear_layer_1d spec.weights spec.bias input
+
+(* Input normalization.
+   In real applications, this might include:
+   - Mean subtraction
+   - Standard deviation scaling
+   - Min-max normalization
+   For this example, we use identity. 
+   
+   Q: Where is the Isabelle/HOL `normalise` defined for this example?
+   *)
+
+let normalise (input : real Tensor.tensor) : real Tensor.tensor =
+  input
+
+(* ========================================================================== *)
+(* THE VERIFIED WIND CONTROLLER                                               *)
+(* ========================================================================== *)
+
+(* The specific neural network weights that satisfy our safety property.
+   
+   Safety requirement (controller_lem):
+     |controller(x,y) + 2x - y| < roadWidth - maxWindShift - 3*maxSensorError
+   
+   With weights = [-2, 1] and bias = 0:
+     controller(x,y) = -2x + y
+     controller(x,y) + 2x - y = -2x + y + 2x - y = 0
+   
+   So |0| < 1.25 is trivially satisfied.
+   
+   In practice, these weights would come from training a neural network,
+   and the verification would prove the trained weights satisfy the spec. *)
+
+let wind_controller : nn_controller_spec = {
+  weights = Tensor.tensor_from_vec [2] [-2.0; 1.0];
+  bias = Tensor.tensor_from_vec [1] [0.0];
+}
+
+(* Output index for velocity (single output at index [0]) *)
+let velocity_output : int list = [0]
+
+(* ========================================================================== *)
+(* CONTROLLER FUNCTION (USING TENSOR MODULE)                                  *)
+(* ========================================================================== *)
+
+(* Controller function using Tensor module operations.
+   
+   Corresponds to Isabelle's:
+     definition controllerFun :: "real ⇒ real ⇒ real"
+       where "controllerFun p1 p2 = 
+         (lookup (Rep_OutputVector (controller (normalise controller 
+           (Abs_InputVector (tensor_from_vec [2] [p1, p2]))))) [velocity])"
+   
+   Pipeline:
+   1. Create input tensor from sensor readings
+   2. Normalize the input
+   3. Run forward pass through neural network
+   4. Extract velocity output using Tensor.lookup
+*)
+
+let controller_fun (current_sensor : real) (previous_sensor : real) : real =
+  let input = Tensor.tensor_from_vec [2] [current_sensor; previous_sensor] in
+  let normalized = normalise input in
+  let output = nn_forward wind_controller normalized in
+  match Tensor.lookup output velocity_output with
+  | Some v -> v
+  | None -> 0.0  (* Should never happen for well-formed networks *)
+
+(* ========================================================================== *)
+(* CONSTANTS                                                                  *)
+(* ========================================================================== *)
+
+let road_width : real = 3.0
+
+let max_wind_shift : real = 1.0
+
+let max_sensor_error : real = 0.25  (* 1/4 *)
+
+(* ========================================================================== *)
+(* STATE AND OBSERVATION TYPES                                                *)
+(* ========================================================================== *)
+
+type state = {
+  wind_speed : real;
+  position : real;
+  velocity : real;
+  sensor : real;
+}
+
+type observation = {
+  wind_shift : real;
+  sensor_error : real;
+}
+
+(* ========================================================================== *)
+(* INITIAL STATE                                                              *)
+(* ========================================================================== *)
+
+let initial_state : state = {
+  wind_speed = 0.0;
+  position = 0.0;
+  velocity = 0.0;
+  sensor = 0.0;
+}
+
+(* ========================================================================== *)
+(* DERIVED QUANTITIES AND PREDICATES                                          *)
+(* ========================================================================== *)
+
+let next_position_wind_shift (s : state) : real =
+  s.position +. s.velocity +. s.wind_speed
+
+let on_road (s : state) : bool =
+  Real.abs s.position <=. road_width
+
+let safe_distance_from_edge (s : state) : bool =
+  Real.abs (next_position_wind_shift s) <. road_width -. max_wind_shift
+
+let accurate_sensor_reading (s : state) : bool =
+  Real.abs (s.position -. s.sensor) <=. max_sensor_error
+
+let sensor_reading_not_off_road (s : state) : bool =
+  Real.abs s.sensor <=. road_width +. max_sensor_error
+
+let safe_state (s : state) : bool =
+  safe_distance_from_edge s 
+  && accurate_sensor_reading s 
+  && sensor_reading_not_off_road s
+
+let valid_observation (obs : observation) : bool =
+  Real.abs obs.sensor_error <=. max_sensor_error
+  && Real.abs obs.wind_shift <=. max_wind_shift
+
+(* ========================================================================== *)
+(* STATE TRANSITION (USING NN CONTROLLER)                                     *)
+(* ========================================================================== *)
+
+let next_state (obs : observation) (s : state) : state =
+  let new_wind_speed = s.wind_speed +. obs.wind_shift in
+  let new_position = s.position +. s.velocity +. new_wind_speed in
+  let new_sensor = new_position +. obs.sensor_error in
+  let new_velocity = s.velocity +. controller_fun new_sensor s.sensor in
+  {
+    wind_speed = new_wind_speed;
+    position = new_position;
+    velocity = new_velocity;
+    sensor = new_sensor;
+  }
+
+let rec final_state (observations : observation list) : state =
+  match observations with
+  | [] -> initial_state
+  | obs :: rest -> next_state obs (final_state rest)
+
+let rec all_valid_observations (observations : observation list) : bool =
+  match observations with
+  | [] -> true
+  | obs :: rest -> valid_observation obs && all_valid_observations rest
+
+(* Combined safety invariant *)
+let safe_and_on_road (s : state) : bool =
+  safe_state s && on_road s
+
+(* ========================================================================== *)
+(* NEURAL NETWORK VERIFICATION LEMMAS                                         *)
+(* ========================================================================== *)
+
+(* Verify that dot_product computes correctly *)
+
+lemma dot_product_nil_left ys =
+  dot_product [] ys = 0.0
+[@@by auto] [@@rw]
+
+lemma dot_product_nil_right xs =
+  dot_product xs [] = 0.0
+[@@by auto] [@@rw]
+
+(* Verify the NN forward pass computes dot product plus bias *)
+
+lemma nn_forward_is_linear spec input =
+  let output = nn_forward spec input in
+  output.vec = [dot_product spec.weights.vec input.vec +. 
+                (match spec.bias.vec with b :: _ -> b | [] -> 0.0)]
+[@@by auto]
+
+(* Verify that our specific controller computes -2x + y *)
+
+lemma controller_fun_expansion x y =
+  controller_fun x y = -2.0 *. x +. y
+[@@by auto] [@@rw]
+
+(* ========================================================================== *)
+(* SAFETY THEOREMS                                                            *)
+(* ========================================================================== *)
+
+(* --- Initial state properties --- *)
+
+lemma initial_state_on_road =
+  on_road initial_state
+[@@by auto]
+
+lemma initial_state_safe =
+  safe_state initial_state
+[@@by auto]
+
+lemma initial_state_safe_and_on_road =
+  safe_and_on_road initial_state
+[@@by auto] [@@rw]
+
+(* --- Controller safety verification --- *)
+
+(* This lemma verifies that the neural network controller satisfies
+   the required safety bound. This is the critical verification that
+   connects the NN weights to the safety specification.
+   
+   The bound ensures that after applying the controller, the vehicle
+   will remain within safe distance from the road edge. *)
+
+lemma controller_lem x y =
+  Real.abs x <=. road_width +. max_sensor_error
+  && Real.abs y <=. road_width +. max_sensor_error
+  ==>
+  Real.abs (controller_fun x y +. 2.0 *. x -. y) 
+    <. road_width -. max_wind_shift -. 3.0 *. max_sensor_error
+[@@by auto]
+
+(* --- State transition preserves safety --- *)
+
+lemma valid_imp_next_state_accurate_sensor obs s =
+  valid_observation obs
+  ==>
+  accurate_sensor_reading (next_state obs s)
+[@@by auto]
+
+lemma valid_and_safe_imp_next_state_on_road obs s =
+  valid_observation obs && safe_state s
+  ==>
+  on_road (next_state obs s)
+[@@by auto]
+
+lemma valid_and_safe_imp_next_state_sensor_not_off_road obs s =
+  valid_observation obs && safe_state s
+  ==>
+  sensor_reading_not_off_road (next_state obs s)
+[@@by auto]
+
+lemma valid_and_safe_imp_next_state_safe_distance obs s =
+  valid_observation obs && safe_state s
+  ==>
+  safe_distance_from_edge (next_state obs s)
+[@@by auto]
+
+lemma safe_imp_next_state_safe s obs =
+  safe_state s && valid_observation obs
+  ==>
+  safe_state (next_state obs s)
+[@@by auto]
+
+lemma safe_and_on_road_preserved obs s =
+  safe_and_on_road s && valid_observation obs
+  ==>
+  safe_and_on_road (next_state obs s)
+[@@by auto] [@@fc]
+
+(* --- Final state theorems --- *)
+
+lemma final_state_safe_and_on_road observations =
+  all_valid_observations observations
+  ==>
+  safe_and_on_road (final_state observations)
+[@@by auto]
+
+lemma final_state_safe observations =
+  all_valid_observations observations
+  ==>
+  safe_state (final_state observations)
+[@@by [%use final_state_safe_and_on_road observations] @> auto]
+
+(* ========================================================================== *)
+(* MAIN THEOREM: Neural Network Controlled Vehicle Stays on Road              *)
+(* ========================================================================== *)
+
+theorem final_state_on_road observations =
+  all_valid_observations observations
+  ==>
+  on_road (final_state observations)
+[@@by [%use final_state_safe_and_on_road observations] @> auto]
+
+(* ========================================================================== *)
+(* EXAMPLES AND TESTS                                                         *)
+(* ========================================================================== *)
+
+(* Test the neural network on some inputs *)
+
+let test_input : real Tensor.tensor = Tensor.tensor_from_vec [2] [1.5; 0.5]
+let test_output = nn_forward wind_controller test_input
+
+eval test_output  (* Should give { dims=[1]; vec=[-2.5] } since -2*1.5 + 0.5 = -2.5 *)
+
+eval (controller_fun 1.5 0.5)   (* Should be -2.5 *)
+eval (controller_fun 0.0 0.0)   (* Should be 0.0 *)
+eval (controller_fun 3.0 3.0)   (* Should be -3.0 *)
+eval (controller_fun (-1.0) 2.0) (* Should be 4.0 *)
+
+(* Verify safety on example trajectory *)
+let example_observations : observation list = [
+  { wind_shift = 0.5; sensor_error = 0.1 };
+  { wind_shift = -0.3; sensor_error = -0.1 };
+  { wind_shift = 0.8; sensor_error = 0.2 };
+]
+
+eval (all_valid_observations example_observations)  (* true *)
+eval (final_state example_observations)
+eval (on_road (final_state example_observations))   (* true by theorem! *)
+
+(* Test with edge-case observations *)
+let edge_case_observations : observation list = [
+  { wind_shift = 1.0; sensor_error = 0.25 };    (* max wind, max sensor error *)
+  { wind_shift = -1.0; sensor_error = -0.25 };  (* min wind, min sensor error *)
+]
+
+eval (all_valid_observations edge_case_observations)  (* true *)
+eval (on_road (final_state edge_case_observations))   (* of course, this is true by our theorem! *)
