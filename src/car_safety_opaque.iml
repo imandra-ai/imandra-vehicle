@@ -33,19 +33,17 @@ module Wind_controller_spec = struct
   (* Velocity index for output tensor.
 
      Matches Isabelle's: definition 
-       velocity :: "FlexIndex" where "velocity = Abs_FlexIndex 0"
-   *)
+       velocity :: "FlexIndex" where "velocity = Abs_FlexIndex 0" *)
 
    let velocity : flex_index = 0
 
-  (* normalise: transforms input by (x[i] + 4) / 8 for each element.
+  (* Normalise: transforms input by (x[i] + 4) / 8 for each element.
    
      Matches Isabelle's:
        definition normalise controller x = 
          foreach 2 (λi. pointwise_div 
            (tensor_plus (flex_subtensor x i) (flextensor_from_vec [] [4])) 
-           (flextensor_from_vec [] [8]))
-   *)
+           (flextensor_from_vec [] [8])) *)
 
   let normalise (x : real Tensor.tensor) : real Tensor.tensor =
     foreach 2 (fun i ->
@@ -62,7 +60,7 @@ module Wind_controller_spec = struct
   let controller : real Tensor.tensor -> real Tensor.tensor = () [@@opaque]
 
   (* ========================================================================== *)
-  (* Tensor-based safety predicates *)
+  (* Tensor-based safety predicates                                             *)
   (* ========================================================================== *)
 
   (* safeInput (Isabelle):
@@ -221,6 +219,7 @@ let valid_observation (obs : observation) : bool =
   && Real.abs obs.wind_shift <=. max_wind_shift
 
 (* Helper for axiom instantiation *)
+
 let new_sensor_value (obs : observation) (s : state) : real =
   s.position +. s.velocity_state +. s.wind_speed +. obs.wind_shift +. obs.sensor_error
 
@@ -259,12 +258,14 @@ let safe_and_on_road (s : state) : bool =
 (* ========================================================================== *)
 
 (* Initial state is safe and on road *)
+
 lemma initial_state_safe_and_on_road =
   safe_and_on_road initial_state
 [@@by auto]
 
 (* Safety is preserved by state transitions
    Corresponds to Isabelle's safe_imp_nextState_safe *)
+
 lemma preservation obs s =
   safe_and_on_road s && valid_observation obs
   ==>
@@ -274,7 +275,7 @@ lemma preservation obs s =
 
 (* Inductive theorem: all final states are safe and on road
    Corresponds to Isabelle's finalState_safe *)
-   
+
 lemma final_state_safe_and_on_road observations =
   all_valid_observations observations ==> safe_and_on_road (final_state observations)
 [@@by induction ~vars:["observations"] () @>| 
