@@ -18,7 +18,7 @@
 (* Scalar multiplication on vectors.
    Corresponds to Isabelle's:
      definition vec_smult::"'a::ring ⇒ 'a list ⇒ 'a list" where
-       "vec_smult α β = map ((*) α) β"
+       "vec_smult α β = map (( * ) α) β"
 *)
 
 let rec vec_smult (alpha : int) (xs : int list) : int list =

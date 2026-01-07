@@ -166,7 +166,7 @@ let reduce_sum (a : int Tensor.tensor) (init : int) : int =
 (* reduceMul - fold multiplication over int list.
    Corresponds to Isabelle's:
      definition reduceMul :: "('a::times) tensor ⇒ 'a ⇒ 'a"
-       where "reduceMul A i = fold (*) (vec A) i"
+       where "reduceMul A i = fold ( * ) (vec A) i"
 *)
 
 let rec reduce_mul_vec (xs : int list) (init : int) : int =
