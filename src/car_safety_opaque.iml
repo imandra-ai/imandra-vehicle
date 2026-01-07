@@ -1,0 +1,298 @@
+(* ========================================================================== *)
+(* Car_Safety_Opaque.iml - Car Safety Proof with Opaque Neural Network        *)
+(*                                                                            *)
+(* This version uses tensor-based safety predicates matching Isabelle's       *)
+(* WindControllerSpec locale exactly. The controller is opaque and its safety *)
+(* property is assumed. This is done in the module Wind_controller_spec,      *)
+(* a hand-written mock-up of what the ImandraX Vehicle backend should         *)
+(* generate. Based on this Wind_controller_spec module, we prove the          *)
+(* resulting system correct in the same manner as the Isabelle/HOL proof.     *)
+(*                                                                            *)
+(* Author: Grant Passmore (grant@imandra.ai)                                  *)
+(* ========================================================================== *)
+
+[@@@import "tensor.iml"]
+[@@@import "subtensor.iml"]
+[@@@import "add.iml"]
+[@@@import "scalar_mult.iml"]
+[@@@import "vehicle.iml"]
+
+open Vehicle
+
+(* ========================================================================== *)
+(* VEHICLE-GENERATED IMANDRAX MODULE (MOCK-UP)                                *)
+(* ========================================================================== *)
+
+module Wind_controller_spec = struct
+
+  type flex_index = int
+
+  let current_sensor : flex_index = 0
+  let previous_sensor : flex_index = 1
+
+  (* Velocity index for output tensor.
+
+     Matches Isabelle's: definition 
+       velocity :: "FlexIndex" where "velocity = Abs_FlexIndex 0"
+   *)
+
+   let velocity : flex_index = 0
+
+  (* normalise: transforms input by (x[i] + 4) / 8 for each element.
+   
+     Matches Isabelle's:
+       definition normalise controller x = 
+         foreach 2 (λi. pointwise_div 
+           (tensor_plus (flex_subtensor x i) (flextensor_from_vec [] [4])) 
+           (flextensor_from_vec [] [8]))
+   *)
+
+  let normalise (x : real Tensor.tensor) : real Tensor.tensor =
+    foreach 2 (fun i ->
+      pointwise_div_real 
+        (tensor_plus_real (flex_subtensor x i) (flextensor_from_vec [] [4.0]))
+        (flextensor_from_vec [] [8.0])
+    )
+
+  (* ========================================================================== *)
+  (* Opaque NN-based controller. We're going to assume a safety axiom about this
+     function symbol (proved externally by a tool Vehicle invoked). *)
+  (* ========================================================================== *)
+   
+  let controller : real Tensor.tensor -> real Tensor.tensor = () [@@opaque]
+
+  (* ========================================================================== *)
+  (* Tensor-based safety predicates *)
+  (* ========================================================================== *)
+
+  (* safeInput (Isabelle):
+     definition safeInput controller x = 
+       forallIndex 2 (λi. 
+         leqTensorReduced (tensor_cdot (-1) (flextensor_from_vec [] [13/4])) (flex_subtensor x i) ∧
+         leqTensorReduced (flex_subtensor x i) (flextensor_from_vec [] [13/4]))
+   *)
+   
+  let safe_input_tensor (x : real Tensor.tensor) : bool =
+    let input_bound = Real.(13.0 / 4.0) in
+    forall_index 2 (fun i ->
+      let xi = flex_subtensor x i in
+      leq_tensor_reduced_real (tensor_cdot (-1.0) (flextensor_from_vec [] [input_bound])) xi
+      && leq_tensor_reduced_real xi (flextensor_from_vec [] [input_bound])
+  )
+
+(* safeOutput (Isabelle):
+     definition safeOutput controller x = 
+       let y = flex_subtensor (controller (normalise controller x)) velocity in
+         ltTensorReduced (tensor_cdot (-1) (flextensor_from_vec [] [5/4])) 
+           (tensor_plus (tensor_plus y (hadamard_prod [2] x[currentSensor])) 
+                        (tensor_cdot (-1) x[previousSensor]))
+         ∧ ltTensorReduced 
+           (tensor_plus (tensor_plus y (hadamard_prod [2] x[currentSensor])) 
+                        (tensor_cdot (-1) x[previousSensor]))
+           (flextensor_from_vec [] [5/4])
+   *)
+
+  let safe_output_tensor (x : real Tensor.tensor) : bool =
+    let output_bound = Real.(5.0 / 4.0) in
+    let y = flex_subtensor (controller (normalise x)) velocity in
+    let x0 = flex_subtensor x current_sensor in
+    let x1 = flex_subtensor x previous_sensor in
+    let two_times_x0 = hadamard_prod_real (flextensor_from_vec [] [2.0]) x0 in
+    let neg_x1 = tensor_cdot (-1.0) x1 in
+    let expr = tensor_plus_real (tensor_plus_real y two_times_x0) neg_x1 in
+    lt_tensor_reduced_real (tensor_cdot (-1.0) (flextensor_from_vec [] [output_bound])) expr
+    && lt_tensor_reduced_real expr (flextensor_from_vec [] [output_bound])
+
+  (* ========================================================================== *)
+  (* SAFETY AXIOM - matches Isabelle's locale assumption:
+       assumes safe: "∀x. safeInput controller x → safeOutput controller x"
+   
+     This would be discharged by Vehicle + e.g., Marabou for the actual 
+     neural network. *)
+  (* ========================================================================== *)
+
+  axiom controller_safety_tensor x =
+    safe_input_tensor x ==> safe_output_tensor x
+
+end
+
+(* ========================================================================== *)
+(* Now, let's build and verify the model which uses this (opaque) controller! *)
+(* ========================================================================== *)
+
+let road_width : real = 3.0
+let max_wind_shift : real = 1.0
+let max_sensor_error : real = 0.25
+
+(* Note that Wind_controller_spec.controller is opaque! *)
+
+let controller_fun p1 p2 = 
+  tensor_head (Wind_controller_spec.controller 
+    (Wind_controller_spec.normalise (Tensor.tensor_from_vec [2] [p1; p2])))
+
+(* ========================================================================== *)
+(* SIMPLIFIED SCALAR FORMS OF SAFETY PROPERTIES                               *)
+(* ========================================================================== *)
+
+let safe_input (x : real) (y : real) : bool =
+  Real.abs x <=. road_width +. max_sensor_error
+  && Real.abs y <=. road_width +. max_sensor_error
+
+let safe_output (x : real) (y : real) (out : real) : bool =
+  Real.abs (out +. 2.0 *. x -. y) 
+    <. road_width -. max_wind_shift -. 3.0 *. max_sensor_error
+
+(* ========================================================================== *)
+(* EQUIVALENCE LEMMAS BETWEEN TENSOR AND SCALAR SAFETY PREDICATES             *)
+(* ========================================================================== *)
+
+lemma safe_input_tensor_equiv x y =
+  Wind_controller_spec.safe_input_tensor (Tensor.tensor_from_vec [2] [x; y]) 
+    = safe_input x y
+[@@by auto] [@@rw]
+
+(* This is derived from controller_safety_tensor and scalar_input_tensor_equiv.
+   
+   It corresponds to Isabelle's controller_lem:
+     lemma controller_lem:
+       assumes "(abs x) ≤ roadWidth + maxSensorError"
+           and "(abs y) ≤ roadWidth + maxSensorError"
+       shows "(abs ((controllerFun x y) + 2*x - y)) < roadWidth - maxWindShift - 3*maxSensorError"
+*)
+
+lemma controller_safety_scalar x y =
+  safe_input x y ==> safe_output x y (controller_fun x y)
+[@@by [%use Wind_controller_spec.controller_safety_tensor (Tensor.tensor_from_vec [2] [x; y])] 
+   @> [%expand controller_fun x y] @> auto]
+
+(* ========================================================================== *)
+(* STATE AND OBSERVATION TYPES                                                *)
+(* ========================================================================== *)
+
+type state = {
+  wind_speed : real;
+  position : real;
+  velocity_state : real;
+  sensor : real;
+}
+
+type observation = {
+  wind_shift : real;
+  sensor_error : real;
+}
+
+(* ========================================================================== *)
+(* INITIAL STATE                                                              *)
+(* ========================================================================== *)
+
+let initial_state : state = {
+  wind_speed = 0.0;
+  position = 0.0;
+  velocity_state = 0.0;
+  sensor = 0.0;
+}
+
+(* ========================================================================== *)
+(* DERIVED QUANTITIES AND PREDICATES                                          *)
+(* ========================================================================== *)
+
+let next_position_wind_shift (s : state) : real =
+  s.position +. s.velocity_state +. s.wind_speed
+
+let on_road (s : state) : bool =
+  Real.abs s.position <=. road_width
+
+let safe_distance_from_edge (s : state) : bool =
+  Real.abs (next_position_wind_shift s) <. road_width -. max_wind_shift
+
+let accurate_sensor_reading (s : state) : bool =
+  Real.abs (s.position -. s.sensor) <=. max_sensor_error
+
+let sensor_reading_not_off_road (s : state) : bool =
+  Real.abs s.sensor <=. road_width +. max_sensor_error
+
+let safe_state (s : state) : bool =
+  safe_distance_from_edge s 
+  && accurate_sensor_reading s 
+  && sensor_reading_not_off_road s
+
+let valid_observation (obs : observation) : bool =
+  Real.abs obs.sensor_error <=. max_sensor_error
+  && Real.abs obs.wind_shift <=. max_wind_shift
+
+(* Helper for axiom instantiation *)
+let new_sensor_value (obs : observation) (s : state) : real =
+  s.position +. s.velocity_state +. s.wind_speed +. obs.wind_shift +. obs.sensor_error
+
+(* ========================================================================== *)
+(* STATE TRANSITION                                                           *)
+(* ========================================================================== *)
+
+let next_state (obs : observation) (s : state) : state =
+  let new_wind_speed = s.wind_speed +. obs.wind_shift in
+  let new_position = s.position +. s.velocity_state +. new_wind_speed in
+  let new_sensor = new_position +. obs.sensor_error in
+  let new_velocity = s.velocity_state +. controller_fun new_sensor s.sensor in
+  {
+    wind_speed = new_wind_speed;
+    position = new_position;
+    velocity_state = new_velocity;
+    sensor = new_sensor;
+  }
+
+let rec final_state (observations : observation list) : state =
+  match observations with
+  | [] -> initial_state
+  | obs :: rest -> next_state obs (final_state rest)
+
+let rec all_valid_observations (observations : observation list) : bool =
+  match observations with
+  | [] -> true
+  | obs :: rest -> valid_observation obs && all_valid_observations rest
+
+(* Combined safety invariant *)
+let safe_and_on_road (s : state) : bool =
+  safe_state s && on_road s
+
+(* ========================================================================== *)
+(* SAFETY THEOREMS                                                            *)
+(* ========================================================================== *)
+
+(* Initial state is safe and on road *)
+lemma initial_state_safe_and_on_road =
+  safe_and_on_road initial_state
+[@@by auto]
+
+(* Safety is preserved by state transitions
+   Corresponds to Isabelle's safe_imp_nextState_safe *)
+lemma preservation obs s =
+  safe_and_on_road s && valid_observation obs
+  ==>
+  safe_and_on_road (next_state obs s)
+[@@by [%use controller_safety_scalar (new_sensor_value obs s) s.sensor] @> auto]
+[@@disable controller_fun]
+
+(* Inductive theorem: all final states are safe and on road
+   Corresponds to Isabelle's finalState_safe *)
+   
+lemma final_state_safe_and_on_road observations =
+  all_valid_observations observations ==> safe_and_on_road (final_state observations)
+[@@by induction ~vars:["observations"] () @>| 
+  [auto; 
+   [%use controller_safety_scalar
+     (new_sensor_value (List.hd observations) (final_state (List.tl observations))) 
+     (final_state (List.tl observations)).sensor] @> auto]]
+  [@@disable controller_fun]
+
+(* ========================================================================== *)
+(* MAIN THEOREM                                                               *)
+(* ========================================================================== *)
+
+(* For ANY neural network controller satisfying controller_safety_tensor,
+   if all observations are valid, the vehicle remains on the road.
+   
+   Corresponds to Isabelle's finalState_onRoad theorem. *)
+
+theorem final_state_on_road observations =
+  all_valid_observations observations ==> on_road (final_state observations)
+[@@by [%use final_state_safe_and_on_road observations] @> auto]

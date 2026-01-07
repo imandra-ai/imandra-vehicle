@@ -368,6 +368,104 @@ let rec foreach_tuple (n : int) (f : int -> 'a) : 'a list =
 [@@measure Ordinal.of_int n]
 
 (* ========================================================================== *)
+(* REAL-VALUED TENSOR OPERATIONS                                              *)
+(* Extensions to the existing tensor infrastructure for real-valued tensors   *)
+(* ========================================================================== *)
+
+(* Pointwise comparison for real vectors *)
+let rec vec_leq_real (xs : real list) (ys : real list) : bool list =
+  match xs, ys with
+  | [], [] -> []
+  | x :: xs', y :: ys' -> (x <=. y) :: vec_leq_real xs' ys'
+  | _, _ -> []
+
+let rec vec_lt_real (xs : real list) (ys : real list) : bool list =
+  match xs, ys with
+  | [], [] -> []
+  | x :: xs', y :: ys' -> (x <. y) :: vec_lt_real xs' ys'
+  | _, _ -> []
+
+(* Tensor comparison operations for reals *)
+let leq_tensor_reduced_real (a : real Tensor.tensor) (b : real Tensor.tensor) : bool =
+  a.dims = b.dims && forall_in_list (vec_leq_real a.vec b.vec)
+
+let lt_tensor_reduced_real (a : real Tensor.tensor) (b : real Tensor.tensor) : bool =
+  a.dims = b.dims && forall_in_list (vec_lt_real a.vec b.vec)
+
+(* Scalar multiplication for real tensors: tensor_cdot *)
+let rec vec_smult_real (c : real) (xs : real list) : real list =
+  match xs with
+  | [] -> []
+  | x :: xs' -> (c *. x) :: vec_smult_real c xs'
+
+let tensor_cdot (c : real) (t : real Tensor.tensor) : real Tensor.tensor =
+  Tensor.tensor_from_vec t.dims (vec_smult_real c t.vec)
+
+(* Tensor addition for reals *)
+let rec vec_plus_real (xs : real list) (ys : real list) : real list =
+  match xs, ys with
+  | [], _ -> []
+  | _, [] -> []
+  | x :: xs', y :: ys' -> (x +. y) :: vec_plus_real xs' ys'
+
+let tensor_plus_real (a : real Tensor.tensor) (b : real Tensor.tensor) : real Tensor.tensor =
+  Tensor.tensor_from_vec a.dims (vec_plus_real a.vec b.vec)
+
+(* Hadamard product (pointwise multiplication) for real tensors *)
+let rec vec_times_real (xs : real list) (ys : real list) : real list =
+  match xs, ys with
+  | [], _ -> []
+  | _, [] -> []
+  | x :: xs', y :: ys' -> (x *. y) :: vec_times_real xs' ys'
+
+let hadamard_prod_real (a : real Tensor.tensor) (b : real Tensor.tensor) : real Tensor.tensor =
+  Tensor.tensor_from_vec a.dims (vec_times_real a.vec b.vec)
+
+(* Pointwise division for real tensors *)
+let rec vec_div_real (xs : real list) (ys : real list) : real list =
+  match xs, ys with
+  | [], _ -> []
+  | _, [] -> []
+  | x :: xs', y :: ys' -> (x /. y) :: vec_div_real xs' ys'
+
+let pointwise_div_real (a : real Tensor.tensor) (b : real Tensor.tensor) : real Tensor.tensor =
+  Tensor.tensor_from_vec a.dims (vec_div_real a.vec b.vec)
+
+(* FlexTensor operations for reals *)
+let flextensor_from_vec (d : int list) (v : real list) : real Tensor.tensor =
+  Tensor.tensor_from_vec d v
+
+(* flex_subtensor: extract element at index i as a 0-dimensional tensor *)
+let flex_subtensor (t : real Tensor.tensor) (i : int) : real Tensor.tensor =
+  match List.nth i t.vec with
+  | Some v -> Tensor.tensor_from_vec [] [v]
+  | None -> Tensor.tensor_from_vec [] [0.0]
+
+(* Extract first element of tensor as scalar *)
+let tensor_head (t : real Tensor.tensor) : real =
+  match t.vec with
+  | x :: _ -> x
+  | [] -> 0.0
+
+(* forallIndex: check predicate for indices 0..n-1 *)
+let rec forall_index_aux (n : int) (i : int) (p : int -> bool) : bool =
+  if i >= n then true
+  else p i && forall_index_aux n (i + 1) p
+[@@measure Ordinal.of_int (n - i)]
+
+let forall_index (n : int) (p : int -> bool) : bool =
+  forall_index_aux n 0 p
+
+(* foreach: apply function to indices 0..n-1 and combine results into tensor *)
+let rec foreach_aux (n : int) (i : int) (f : int -> real Tensor.tensor) : real list =
+  if i >= n then []
+  else tensor_head (f i) :: foreach_aux n (i + 1) f
+[@@measure Ordinal.of_int (n - i)]
+
+let foreach (n : int) (f : int -> real Tensor.tensor) : real Tensor.tensor =
+  Tensor.tensor_from_vec [n] (foreach_aux n 0 f)
+
+(* ========================================================================== *)
 (* EXAMPLES                                                                   *)
 (* ========================================================================== *)
 

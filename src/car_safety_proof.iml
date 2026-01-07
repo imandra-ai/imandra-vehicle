@@ -1,11 +1,16 @@
 (* ========================================================================== *)
-(* Car_Safety_Proof.iml - Safety Proof with Neural Network Controller         *)
+(* Car_Safety_Explicit.iml - Safety proof with explicitly defined NN-based    *) 
+(*                           controller.                                      *)
 (*                                                                            *)
 (* This version uses our ImandraX Tensor module to define the controller,     *)
-(* demonstrating verification of a neural network for safety-critical control.*)
+(* demonstrating verification of a NN-based controller.                       *)
 (*                                                                            *)
 (* The controller is defined as:                                              *)
 (*   controllerFun p1 p2 = lookup (controller (normalise (tensor [p1,p2]))) 0 *)
+(* Note that for the ImandraX Vehicle backend, we expect the neural network   *)
+(* to be represented abstractly (as an opaque function with assumptions based *)
+(* on what properties were proved by the external NN verifier). For a good    *)
+(* example of that approach, see `Car_safety_opaque.iml`.                     *)
 (*                                                                            *)
 (* Author: Grant Passmore (grant@imandra.ai)                                  *)
 (* ========================================================================== *)
@@ -104,19 +109,6 @@ type nn_controller_spec = {
 let nn_forward (spec : nn_controller_spec) (input : real Tensor.tensor) : real Tensor.tensor =
   linear_layer_1d spec.weights spec.bias input
 
-(* Input normalization.
-   In real applications, this might include:
-   - Mean subtraction
-   - Standard deviation scaling
-   - Min-max normalization
-   For this example, we use identity. 
-   
-   Q: Where is the Isabelle/HOL `normalise` defined for this example?
-   *)
-
-let normalise (input : real Tensor.tensor) : real Tensor.tensor =
-  input
-
 (* ========================================================================== *)
 (* THE VERIFIED WIND CONTROLLER                                               *)
 (* ========================================================================== *)
@@ -154,18 +146,12 @@ let velocity_output : int list = [0]
        where "controllerFun p1 p2 = 
          (lookup (Rep_OutputVector (controller (normalise controller 
            (Abs_InputVector (tensor_from_vec [2] [p1, p2]))))) [velocity])"
-   
-   Pipeline:
-   1. Create input tensor from sensor readings
-   2. Normalize the input
-   3. Run forward pass through neural network
-   4. Extract velocity output using Tensor.lookup
+
 *)
 
 let controller_fun (current_sensor : real) (previous_sensor : real) : real =
   let input = Tensor.tensor_from_vec [2] [current_sensor; previous_sensor] in
-  let normalized = normalise input in
-  let output = nn_forward wind_controller normalized in
+  let output = nn_forward wind_controller input in
   match Tensor.lookup output velocity_output with
   | Some v -> v
   | None -> 0.0  (* Should never happen for well-formed networks *)
